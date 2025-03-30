@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>English Learning Video Call</title>
+    <style>
+        body { 
+            text-align: center; 
+            font-family: 'Arial', sans-serif; 
+            background-color: #f4f4f9; 
+            color: #333;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            justify-content: center;
+        }
+        h2 { color: #0056b3; }
+        .container {
+            max-width: 800px;
+            width: 100%;
+            padding: 20px;
+            background: white;
+            box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+        }
+        .video-container {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            position: relative;
+        }
+        video { 
+            width: 45%; 
+            border: 2px solid #0056b3; 
+            border-radius: 5px;
+        }
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        button { 
+            padding: 10px 20px; 
+            cursor: pointer; 
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        .primary { background-color: #007bff; color: white; }
+        .danger { background-color: #dc3545; color: white; }
+        .secondary { background-color: #6c757d; color: white; }
+        .loading {
+            font-size: 18px;
+            font-weight: bold;
+            color: #0056b3;
+            display: none;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Practice English with Live Conversations</h2>
+        <p>Improve your English by speaking with others in real-time!</p>
+        <div class="video-container">
+            <video id="localVideo" autoplay playsinline></video>
+            <video id="remoteVideo" autoplay playsinline></video>
+        </div>
+        <p id="loading" class="loading">Waiting for Connection...</p>
+        <div class="controls">
+            <button class="primary" onclick="startCall()">Start Call</button>
+            <button class="danger" onclick="endCall()">End Call</button>
+            <button class="secondary" id="muteButton" onclick="toggleMute()">🔊 Mute</button>
+            <button class="secondary" id="videoButton" onclick="toggleVideo()">🎥 Video Off</button>
+        </div>
+    </div>
+
+    <script>
+        let socket;
+        let localStream;
+        let remoteStream;
+        let peerConnection;
+        let isMuted = false;
+        let isVideoOn = true;
+        const servers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
+
+        function connectWebSocket() {
+            socket = new WebSocket('ws://localhost:3000');
+            socket.onopen = () => console.log("WebSocket connected");
+            socket.onmessage = async (event) => {
+                const message = JSON.parse(event.data);
+                if (message.offer) {
+                    document.getElementById("loading").style.display = "none";
+                    if (!peerConnection) peerConnection = createPeerConnection();
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    sendMessage({ answer });
+                }
+                if (message.answer) {
+                    document.getElementById("loading").style.display = "none";
+                    if (peerConnection.signalingState === "have-local-offer") {
+                        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+                    }
+                }
+                if (message.candidate) {
+                    if (peerConnection) {
+                        await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+                    }
+                }
+                if (message.endCall) {
+                    endCall(true);
+                }
+            };
+            socket.onclose = () => {
+                console.log("WebSocket closed. Reconnecting...");
+                setTimeout(connectWebSocket, 2000);
+            };
+        }
+
+        function sendMessage(data) {
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify(data));
+            }
+        }
+
+        async function startCall() {
+            document.getElementById("loading").style.display = "block";
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                document.getElementById("localVideo").srcObject = localStream;
+                if (!peerConnection) peerConnection = createPeerConnection();
+                localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                sendMessage({ offer });
+            } catch (error) {
+                console.error("Error accessing media devices:", error);
+            }
+        }
+
+        function createPeerConnection() {
+            const pc = new RTCPeerConnection(servers);
+            remoteStream = new MediaStream();
+            document.getElementById("remoteVideo").srcObject = remoteStream;
+            pc.ontrack = event => {
+                document.getElementById("loading").style.display = "none";
+                event.streams[0].getTracks().forEach(track => remoteStream.addTrack(track));
+            };
+            pc.onicecandidate = event => {
+                if (event.candidate) {
+                    sendMessage({ candidate: event.candidate });
+                }
+            };
+            return pc;
+        }
+
+        function endCall(isRemote = false) {
+            document.getElementById("loading").style.display = "none";
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                document.getElementById("localVideo").srcObject = null;
+            }
+            if (remoteStream) {
+                remoteStream.getTracks().forEach(track => track.stop());
+                document.getElementById("remoteVideo").srcObject = null;
+            }
+            if (!isRemote) {
+                sendMessage({ endCall: true });
+            }
+            console.log("Call ended");
+        }
+
+        function toggleMute() {
+            isMuted = !isMuted;
+            localStream.getAudioTracks()[0].enabled = !isMuted;
+            document.getElementById("muteButton").textContent = isMuted ? "🔇 Unmute" : "🔊 Mute";
+        }
+
+        function toggleVideo() {
+            isVideoOn = !isVideoOn;
+            localStream.getVideoTracks()[0].enabled = isVideoOn;
+            document.getElementById("videoButton").textContent = isVideoOn ? "🎥 Video Off" : "📷 Video On";
+        }
+
+        connectWebSocket();
+    </script>
+</body>
+</html>
